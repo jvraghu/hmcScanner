@@ -74,7 +74,7 @@ public class Loader {
 	private boolean		rowMode = false;
 	private boolean		verboseMode = false;
 	
-	private static String	version = "0.11.24";
+	private static String	version = "0.11.25";
 	
 	private String		_hmc = null;
 	private String		user = null;
@@ -6193,12 +6193,10 @@ public class Loader {
 		String s[];
 		Label label;		
 		int lparNameSize=0;
-		int size[]=new int[10];
 		int n;
 				
 		row = 0;
-		for (i=0; i<size.length; i++)
-			size[i] = 0;
+
 		
 		for (i=0; i<managedSystem.length; i++) {
 			
@@ -6209,7 +6207,7 @@ public class Loader {
 			
 			s = managedSystem[i].getVarValues("name");
 			ds.mergeCells(0, row, 9, row+1);
-			n = ds.addLabel(0,row,s[0],BOLD|CENTRE|VCENTRE|GREEN); if (n>size[0]) size[0]=n; 
+			n = ds.addLabel(0,row,s[0],BOLD|CENTRE|VCENTRE|GREEN);  
 			row++;
 			row++;
 						
@@ -6220,7 +6218,7 @@ public class Loader {
 				 * Setup titles for virtual switches
 				 */ 
 				ds.mergeCells(0, row, 9, row);
-				n = ds.addLabel(0,row,"Virtual Switches",BOLD|CENTRE|B_ALL_MED); if (n>size[0]) size[0]=n;
+				n = ds.addLabel(0,row,"Virtual Switches",BOLD|CENTRE|B_ALL_MED); 
 				
 				n = ds.addLabel(0,row+1,"Name",BOLD|CENTRE|B_ALL_MED);
 				n = ds.addLabel(0,row+2,"VLAN ids",BOLD|CENTRE|VCENTRE|B_ALL_MED);
@@ -6231,7 +6229,7 @@ public class Loader {
 				for (j=0; j<object.length; j++) {
 					
 					s = object[j].getVarValues("vswitch");
-					n = ds.addLabel(1+j, row+1, s,0, B_LEFT_LOW|B_BOTTOM_LOW|B_RIGHT_LOW); if (n>size[1+j]) size[1+j]=n;
+					n = ds.addLabel(1+j, row+1, s,0, B_LEFT_LOW|B_BOTTOM_LOW|B_RIGHT_LOW);
 					
 					s = object[j].getVarValues("vlan_ids");
 					ds.addMultipleLabelsWrap(1+j, row+2, s,B_LEFT_LOW|B_BOTTOM_LOW|B_RIGHT_LOW|WRAP);			
