@@ -74,7 +74,7 @@ public class Loader {
 	private boolean		rowMode = false;
 	private boolean		verboseMode = false;
 	
-	private static String	version = "0.11.25";
+	private static String	version = "0.11.34";
 	
 	private String		_hmc = null;
 	private String		user = null;
@@ -101,6 +101,7 @@ public class Loader {
 	private GenericData	scannerParams;
 	private GregorianCalendar scannerDate=null;
 	private GenericData hmc = null;
+	private GenericData entPool[] = null;
 	
 	private byte		managerType = M_UNKNOWN;
 	
@@ -111,7 +112,7 @@ public class Loader {
 	// File names
 	private static String	excel = "_scan.xls";
 	private static String	excelSane = "_scan_safe.xls";
-	private static String	systemData = "system_data.txt";
+	private static String	systemData = "system_data.txt"; 
 	private static String	procSysData = "system_proc.txt";
 	private static String	memSysData = "system_mem.txt";
 	private static String	slotSysData = "system_slot.txt";
@@ -167,6 +168,8 @@ public class Loader {
 	private static String	lscod_cap_proc_onoff="lscod_cap_proc_onoff.txt";
 	private static String	lscod_cap_mem_onoff="lscod_cap_mem_onoff.txt";
 	private static String	lscod_hist="lscod_hist.txt";
+	private static String	proc0="proc0.txt";
+	private static String	lscodpool="lscodpool.txt";
 	
 	// HTML file names
 	private static String	header_html="header.html";
@@ -202,6 +205,7 @@ public class Loader {
 	private static String	poolperfindex_html="poolperfindex.html";
 	private static String	onoff_html="onoff.html";
 	private static String	codlog_html="codlog.html";
+	private static String	syspool_html="syspool.html";
 	
 	// HTML oriented structures
 	private Vector<String>	buttonName = null;
@@ -247,6 +251,7 @@ public class Loader {
 	private static String	poolperfindex_csv="poolperfindex.csv";
 	private static String	onoff_csv="onoff.csv";
 	private static String	codlog_csv="codlog.csv";
+	private static String	syspool_csv="syspool.csv";
 	
 	// Object types
 	private static byte		PROC			= 0;
@@ -278,6 +283,7 @@ public class Loader {
 	private static byte		LSCOD_CAP_PROC_ONOFF = 26;
 	private static byte		LSCOD_CAP_MEM_ONOFF = 27;
 	private static byte		LSCOD_HIST 		= 28;
+	private static byte		ENTPOOLSYS		= 29;
 	
 	// Command line data
 	
@@ -1119,6 +1125,99 @@ public class Loader {
 	
 	
 	
+	/*
+	 * Add a new GenericData to entPool[]
+	 */
+	private void addEntPool(GenericData pool) {
+		if (entPool == null) {
+			entPool = new GenericData[1];
+			entPool[0] = pool;
+			return;
+		}
+			
+		GenericData newPool[] = new GenericData[entPool.length+1];
+		int i;
+		for (i=0; i<entPool.length; i++)
+			newPool[i] = entPool[i];
+		newPool[i] = pool;
+		entPool = newPool;		
+	}
+	
+	
+	private void parseEntPool(String baseDir) {
+		BufferedReader br;
+		String names[]=null;
+		String line;
+		int j;
+		DataParser dp;
+		GenericData pool;
+		
+		try {			
+			br = new BufferedReader(new FileReader(baseDir + lscodpool),1024*1024);
+			
+			names=null;
+			while ( (line = br.readLine()) != null ) {
+				
+				// Skip line if no data is returned
+				if (line.startsWith("HSC") || line.startsWith("No results were found"))
+					continue;
+				
+				dp = new DataParser(line);
+				names = dp.getNames();
+				pool = new GenericData();
+				
+				for (j=0; j<names.length; j++) {
+					pool.add(names[j], dp.getStringValue(names[j]));					
+				}
+				
+				addEntPool(pool);			
+			}		
+			
+		} 
+		catch (IOException ioe) {	
+			System.out.println("Loader.parseEntPool: IOException");
+			System.out.println(ioe);
+		}	
+	}
+	
+	
+	private void parseEntPoolSystem(String baseDir) {
+		if (entPool == null)
+			return;
+		
+		for (int i=0; i<entPool.length; i++) 
+			load_data(entPool[i], baseDir, lscodpool, ENTPOOLSYS);		
+	}
+	
+	
+	
+	private void detect_enterprise_pool(String prefix, String baseDir) {
+		
+		System.out.print("Looking for Enterprise System Pools: ");
+		sendCommand(sshm, prefix + "lscodpool --level pool", baseDir + lscodpool);
+		parseEntPool(baseDir);
+		
+		if (entPool == null)
+			System.out.println("none detected");
+		else {
+			System.out.println(entPool.length + " detected");
+			System.out.println("Scanning Enterprise pools: ");
+			
+			int i;
+			String name;
+			
+			for (i=0; i<entPool.length; i++) {
+				name = entPool[i].getVarValues("name")[0];
+				sendCommand(sshm, prefix + "lscodpool --level sys -p " + name, baseDir + name + "_" + lscodpool);
+				System.out.print(".");
+				sendCommand(sshm, prefix + "lscodpool -t hist -p " + name, baseDir + name + "_hist_" + lscodpool);
+				System.out.print(".");
+			}
+			
+			System.out.println(" DONE");
+		}	
+	}
+	
 	
 	
 	private void collect_data(String hmc, String baseDir) {
@@ -1242,6 +1341,12 @@ public class Loader {
 							System.exit(1);
 		}
 		
+		
+	
+		// Identify pools and download of their configuration
+		if (managerType == M_HMC)
+			detect_enterprise_pool(prefix, baseDir);
+		
 		System.out.print("Detecting managed systems: ");
 		
 		// Get utilization data configuration
@@ -1267,6 +1372,11 @@ public class Loader {
 		
 		// Load system data into parent data structure
 		loadSysConfigData(hmc, baseDir);
+		
+		if (managedSystem == null) {
+			System.out.println(" none detected!");
+			return;
+		}
 		
 		System.out.println(managedSystem.length+" systems present.");
 		System.out.println("Starting managed system configuration collection:");
@@ -1332,7 +1442,11 @@ public class Loader {
 			
 			System.out.println(" DONE");
 		}
+		
+		
+		
 		System.out.println("Collection successfully finished. Data is in "+baseDir);
+		
 		
 		if (startPerf != null) {
 			System.out.println("Starting performance data collection from all managed system:");
@@ -1645,6 +1759,7 @@ public class Loader {
 					sendCommand(sshm, "ioscli lsdev | grep -E \"^fcs[0-9]+ +\" | while read i j ; do echo \"#$i\"; ioscli lsdev -attr -dev $i ; done", baseDir + name + "_" + vios + "_" + fcattr);
 					sendCommand(sshm, "ioscli lspv -size -fmt :", baseDir + name + "_" + vios + "_" + lspv_size);
 					sendCommand(sshm, "ioscli lspv -free -fmt :", baseDir + name + "_" + vios + "_" + lspv_free);
+					sendCommand(sshm, "ioscli lsdev -dev proc0 -attr", baseDir + name + "_" + vios + "_" + proc0);
 				} else if (!novios) {
 					/*
 					sshm.sendCommand(prefix + "viosvrcmd -m \'"+name+"\' -p \'"+vios+"\' -c \"ioslevel\"", baseDir + name + "_" + vios + "_" + ioslevel);					
@@ -1683,6 +1798,7 @@ public class Loader {
 							prefix + "viosvrcmd -m \'"+name+"\' -p \'"+vios+"\' -c \"lsdev -attr -dev $i\" ; done", baseDir + name + "_" + vios + "_" + fcattr);
 					sendCommand(sshm, prefix + "viosvrcmd -m \'"+name+"\' -p \'"+vios+"\' -c \"lspv -size -fmt :\"", baseDir + name + "_" + vios + "_" + lspv_size);
 					sendCommand(sshm, prefix + "viosvrcmd -m \'"+name+"\' -p \'"+vios+"\' -c \"lspv -free -fmt :\"", baseDir + name + "_" + vios + "_" + lspv_free);
+					sendCommand(sshm, prefix + "viosvrcmd -m \'"+name+"\' -p \'"+vios+"\' -c \"lsdev -dev proc0 -attr\"", baseDir + name + "_" + vios + "_" + proc0);
 				}
 			}			
 		} 
@@ -1722,6 +1838,8 @@ public class Loader {
 				load_sea_data(ms, vios, baseDir);
 				
 				load_fc_data(ms, vios, baseDir);
+				
+				load_freq_data(ms, vios, baseDir);
 			}			
 		} 
 		catch (IOException ioe) {	
@@ -1730,7 +1848,69 @@ public class Loader {
 		}	
 		
 	}
+
 	
+	
+	private void load_freq_data(GenericData ms, String viosName, String baseDir) {
+		String sysName;
+		BufferedReader br=null;
+		String line;
+		String values[]=null;
+		String s[]=null;
+		
+		float freq;
+		
+		sysName = ms.getVarValues("name")[0];
+
+		
+		try {			
+			br = new BufferedReader(new FileReader(baseDir + sysName + "_" + viosName + "_" + proc0),1024*1024);
+			
+			while ( (line=br.readLine())!= null ) {
+				
+				if (line.startsWith("HSC")) {
+					if (verboseMode) {
+						System.out.println("Warning: file " + baseDir + sysName + "_" + viosName + "_" + proc0 + " skipped due to invalid line");
+						System.out.println("         Offending line = " + line);
+					}
+					return;
+				}
+				
+				s = line.split("\\s+");
+				if (s.length <2)
+					continue;
+				
+				if (s[0].equals("frequency")) {			
+					try {
+						freq = Float.parseFloat(s[1]);
+						freq = freq / 1000000000;
+					} catch (NumberFormatException nfe) {
+						System.out.println("Warning: could not evaluate CPU frequency from VIOS " + viosName + ": value=" + line);
+						continue;
+					}
+					values = new String[1];
+					values[0] = Float.toString(freq);
+					ms.add("frequency", values);
+					continue;
+				}
+				
+				if (s[0].equals("type")) {			
+					values = new String[1];
+					values[0] = s[1];
+					ms.add("cpu_type", values);
+					continue;
+				}
+				
+	
+			}
+			br.close();
+		} 
+		catch (IOException ioe) {	
+			System.out.println("Loader.load_freq_data: IOException");
+			System.out.println(ioe);
+		}			
+	}
+
 	
 	private void load_vios_ioslevel(GenericData ms, String viosName, String baseDir) {
 		String sysName;
@@ -2621,8 +2801,14 @@ public class Loader {
 					// Firmware
 					tokens = line.split("\\s+");
 					names = new String[1];
-					names[0]=tokens[1];
-					gd.add("firmware",names);
+					if (tokens.length <2) {
+						// no firmware is provided
+						names[0]="N/A";
+						gd.add("firmware",names);
+					} else {
+						names[0]=tokens[1];
+						gd.add("firmware",names);
+					}
 					continue;
 				}
 				
@@ -3512,8 +3698,16 @@ public class Loader {
 		loadScannerParams(baseDir);
 		
 		// Load system data into parent data structure (already done if HMC was called)
-		if (onlyReadFile)
+		if (onlyReadFile) {
 			loadSysConfigData(hmc, baseDir);
+			if (managerType == M_HMC)
+				parseEntPool(baseDir);
+		}
+		
+		if (managedSystem == null) {
+			System.out.println(" no managed systems detected!");
+			return;
+		}
 	
 		for (i=0; i<managedSystem.length; i++) {
 			load_data(managedSystem[i], baseDir, procSysData,	 PROC);
@@ -3542,6 +3736,9 @@ public class Loader {
 			
 			System.out.print(".");
 		}
+		
+		if (managerType == M_HMC)
+			parseEntPoolSystem(baseDir);
 		
 		if (managerType == M_HMC)
 			parseHMCFiles(baseDir);
@@ -4341,8 +4538,8 @@ public class Loader {
 							prevPoolData[POOL_TIME_CYCLES]!=null &&
 							currPoolData[UTILIZED_POOL_CYCLES]!=null &&
 							currPoolData[POOL_TIME_CYCLES]!=null &&
-							prevPoolData[POOL_TIME_CYCLES].compareTo(currPoolData[POOL_TIME_CYCLES])>0 &&
-							prevPoolData[UTILIZED_POOL_CYCLES].compareTo(currPoolData[UTILIZED_POOL_CYCLES])>0) {
+							prevPoolData[POOL_TIME_CYCLES].compareTo(currPoolData[POOL_TIME_CYCLES])>0 /* &&
+							prevPoolData[UTILIZED_POOL_CYCLES].compareTo(currPoolData[UTILIZED_POOL_CYCLES])>0 */) {
 						
 						bi1 = prevPoolData[UTILIZED_POOL_CYCLES].subtract(currPoolData[UTILIZED_POOL_CYCLES]);
 						bi2 = prevPoolData[POOL_TIME_CYCLES].subtract(currPoolData[POOL_TIME_CYCLES]);					
@@ -4389,8 +4586,8 @@ public class Loader {
 							prevProcPoolData[poolID][POOL_TIME_CYCLES]!=null &&
 							currProcPoolData[poolID][UTILIZED_POOL_CYCLES]!=null &&
 							currProcPoolData[poolID][POOL_TIME_CYCLES]!=null &&
-							prevProcPoolData[poolID][POOL_TIME_CYCLES].compareTo(currProcPoolData[poolID][POOL_TIME_CYCLES])>0 &&
-							prevProcPoolData[poolID][UTILIZED_POOL_CYCLES].compareTo(currProcPoolData[poolID][UTILIZED_POOL_CYCLES])>0) {
+							prevProcPoolData[poolID][POOL_TIME_CYCLES].compareTo(currProcPoolData[poolID][POOL_TIME_CYCLES])>0 /* &&
+							prevProcPoolData[poolID][UTILIZED_POOL_CYCLES].compareTo(currProcPoolData[poolID][UTILIZED_POOL_CYCLES])>0 */) {
 						
 						int id = getProcPoolId(managedSystem[num].getVarValues("name")[0], currProcPoolName[poolID]);
 						
@@ -4445,30 +4642,53 @@ public class Loader {
 					else
 						id = getLparIdByName(dp.getStringValue("lpar_name")[0]);
 					
-					if (!mode.equals("shared") || id<0)
+					if (id<0) {
+						System.out.println("Skipping unknown LPAR " + dp.getStringValue("lpar_name")[0]);
 						continue;
+					}
+					
+					// TESTING
+					boolean dedicated = false;
+					if (!mode.equals("shared"))
+						dedicated = true;
 									
 					
 					if (type==HOURLY) {
-						lparEnt[id].addHourData(sample, 
+						if (!dedicated)
+							lparEnt[id].addHourData(sample, 
 								Float.parseFloat(dp.getStringValue("curr_proc_units")[0]) );
+						else lparEnt[id].addHourData(sample, 
+								Float.parseFloat(dp.getStringValue("curr_procs")[0]) );
 						lparVP[id].addHourData(sample,
 								Float.parseFloat(dp.getStringValue("curr_procs")[0]));
 					} else if (type==DAILY) {
-						lparEnt[id].addDayData(sample, 
+						if (!dedicated)
+							lparEnt[id].addDayData(sample, 
 								Float.parseFloat(dp.getStringValue("curr_proc_units")[0]) );
+						else
+							lparEnt[id].addDayData(sample, 
+								Float.parseFloat(dp.getStringValue("curr_procs")[0]) );
 						lparVP[id].addDayData(sample,
 								Float.parseFloat(dp.getStringValue("curr_procs")[0]));
 					}
 					
-					s = dp.getStringValue("curr_sharing_mode")[0];
-					if (s.equals("uncap"))
-						cap = false;
-					else
-						cap = true;
-					poolName = dp.getStringValue("curr_shared_proc_pool_name")[0];
-					if (poolName==null)
+					if (!dedicated) {
+						s = dp.getStringValue("curr_sharing_mode")[0];
+						if (s.equals("uncap"))
+							cap = false;
+						else
+							cap = true;
+					} else
+							cap = true;
+					
+					if (!dedicated) {
+						poolName = dp.getStringValue("curr_shared_proc_pool_name")[0];
+						if (poolName==null)
+							poolName = "DefaultPool";
+					} else
 						poolName = "DefaultPool";
+						
+				
 					
 					if (type==HOURLY) 
 						lparStatus[id].addHourData(sample, managedSystem[num].getVarValues("name")[0], poolName, cap);
@@ -4527,6 +4747,11 @@ public class Loader {
 		WritableSheet sheet;
 		int num;
 		
+		if (managedSystem==null) {
+			System.out.println("No managed systems are present: aborting report generation.");
+			return;
+		}
+		
 		System.out.print("Starting Excel file creation. ");
 		
 		try {
@@ -4570,6 +4795,14 @@ public class Loader {
 					createSystemsSheetCSV(csvDir + File.separatorChar + systems_csv);
 			} else
 				createSystemsSheet(sheet);
+			
+			sheet = workbook.createSheet("Ent_Sys_Pools", 		num++);
+			createSysPoolRowBasedExcel(sheet);
+			if (htmlDir!=null)
+				createSysPoolRowBasedHTML(htmlDir + File.separatorChar + syspool_html);
+			if (csvDir!=null)
+				createSysPoolRowBasedCSV(csvDir + File.separatorChar + syspool_csv);
+			 
 			
 			sheet = workbook.createSheet("OnOff CoD", 	num++);			
 			createOnOffSheetExcel(sheet);	
@@ -5121,7 +5354,7 @@ public class Loader {
 		String serial[];
 		String str;
 		
-		int size[]=new int[13];
+		int size[]=new int[20];
 		int n;
 		for (i=0; i<size.length; i++)
 			size[i] = 0;
@@ -5132,19 +5365,26 @@ public class Loader {
 		/*
 		 * Setup titles
 		 */ 
-		n = ds.addLabel(col,row,"Name",BOLD|B_ALL_MED|GREEN); if (n>size[col]) size[col]=n; col++;
-		n = ds.addLabel(col,row,"ID",BOLD|B_ALL_MED|GREEN); if (n>size[col]) size[col]=n; col++;
-		n = ds.addLabel(col,row,"Status",BOLD|B_ALL_MED|GREEN); if (n>size[col]) size[col]=n; col++;
-		n = ds.addLabel(col,row,"Environment",BOLD|B_ALL_MED|GREEN); if (n>size[col]) size[col]=n; col++;
-		n = ds.addLabel(col,row,"OS Version",BOLD|CENTRE|B_ALL_MED|GREEN); if (n>size[col]) size[col]=n; col++;
-		n = ds.addLabel(col,row,"Pool data available",BOLD|B_ALL_MED|GREEN); if (n>size[col]) size[col]=n; col++;
-		n = ds.addLabel(col,row,"Proc mode",BOLD|B_ALL_MED|GREEN); if (n>size[col]) size[col]=n; col++;
-		n = ds.addLabel(col,row,"RMC IP",BOLD|B_ALL_MED|GREEN); if (n>size[col]) size[col]=n; col++;
-		n = ds.addLabel(col,row,"RMC State",BOLD|B_ALL_MED|GREEN); if (n>size[col]) size[col]=n; col++;
-		n = ds.addLabel(col,row,"Default profile",BOLD|B_ALL_MED|GREEN); if (n>size[col]) size[col]=n; col++;
-		n = ds.addLabel(col,row,"Current profile",BOLD|B_ALL_MED|GREEN); if (n>size[col]) size[col]=n; col++;
-		n = ds.addLabel(col,row,"Managed System Name",BOLD|B_ALL_MED|GREEN); if (n>size[col]) size[col]=n; col++;
-		n = ds.addLabel(col,row,"Managed System Serial",BOLD|B_ALL_MED|GREEN); if (n>size[col]) size[col]=n; col++;
+		n = ds.addLabel(col,row,"Name",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"ID",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"Status",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"Environment",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"OS Version",BOLD|CENTRE|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"Pool data available",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"Proc mode",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"RMC IP",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"RMC State",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"Default profile",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"Current profile",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"Migration disabled",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"Auto start",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"Suspend capable",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"Remote restart capable",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"Simplified remote restart capable",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"Remote restart status",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"Sync current profile",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"Managed System Name",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
+		n = ds.addLabel(col,row,"Managed System Serial",BOLD|B_ALL_MED|GREEN|DIAG45); col++;
 		
 		row++;	
 		
@@ -5199,6 +5439,55 @@ public class Loader {
 				
 				n = ds.addLabel(col, row, lpar[j].getVarValues("default_profile"),0, B_LEFT_LOW|B_BOTTOM_LOW|B_RIGHT_LOW); if (n>size[col]) size[col]=n; col++;
 				n = ds.addLabel(col, row, lpar[j].getVarValues("curr_profile"),0, B_LEFT_LOW|B_BOTTOM_LOW|B_RIGHT_LOW); if (n>size[col]) size[col]=n; col++;
+				
+				s = lpar[j].getVarValues("migration_disabled");
+				if (s==null || s[0].equals("0") )
+					str = "false";
+				else 
+					str = "true";				
+				n = ds.addLabel(col, row, str, B_LEFT_LOW|B_BOTTOM_LOW|B_RIGHT_LOW); if (n>size[col]) size[col]=n; col++;
+				
+				s = lpar[j].getVarValues("auto_start");
+				if (s==null || s[0].equals("0") )
+					str = "false";
+				else 
+					str = "true";				
+				n = ds.addLabel(col, row, str, B_LEFT_LOW|B_BOTTOM_LOW|B_RIGHT_LOW); if (n>size[col]) size[col]=n; col++;
+				
+				s = lpar[j].getVarValues("suspend_capable");
+				if (s==null || s[0].equals("0") )
+					str = "false";
+				else 
+					str = "true";				
+				n = ds.addLabel(col, row, str, B_LEFT_LOW|B_BOTTOM_LOW|B_RIGHT_LOW); if (n>size[col]) size[col]=n; col++;
+				
+				s = lpar[j].getVarValues("remote_restart_capable");
+				if (s==null || s[0].equals("0") )
+					str = "false";
+				else 
+					str = "true";				
+				n = ds.addLabel(col, row, str, B_LEFT_LOW|B_BOTTOM_LOW|B_RIGHT_LOW); if (n>size[col]) size[col]=n; col++;
+				
+				s = lpar[j].getVarValues("simplified_remote_restart_capable");
+				if (s==null || s[0].equals("0") )
+					str = "false";
+				else 
+					str = "true";				
+				n = ds.addLabel(col, row, str, B_LEFT_LOW|B_BOTTOM_LOW|B_RIGHT_LOW); if (n>size[col]) size[col]=n; col++;
+				
+				s = lpar[j].getVarValues("remote_restart_status");
+				if (s==null)
+					str = "N/A";
+				else 
+					str = s[0];		
+				n = ds.addLabel(col, row, str, B_LEFT_LOW|B_BOTTOM_LOW|B_RIGHT_LOW); if (n>size[col]) size[col]=n; col++;
+				
+				s = lpar[j].getVarValues("sync_current_profile");
+				if (s==null || s[0].equals("0") )
+					str = "false";
+				else 
+					str = "true";		
+				n = ds.addLabel(col, row, str, B_LEFT_LOW|B_BOTTOM_LOW|B_RIGHT_LOW); if (n>size[col]) size[col]=n; col++;
 				
 				n = ds.addLabel(col, row, sysName,0, B_LEFT_LOW|B_BOTTOM_LOW|B_RIGHT_LOW); if (n>size[col]) size[col]=n; col++;
 				n = ds.addLabel(col, row, serial,0, B_LEFT_LOW|B_BOTTOM_LOW|B_RIGHT_LOW); if (n>size[col]) size[col]=n; col++;
@@ -5466,28 +5755,9 @@ public class Loader {
 	}
 	
 	
-	private void createMemSheetRowBasedExcel(WritableSheet sheet) {
-		DataSheet ds = createMemSheetRowBased();
-		if (ds!=null)
-			ds.createExcelSheet(sheet);
-	}
 	
-	private void createMemSheetRowBasedHTML(String fileName) {
-		DataSheet ds = createMemSheetRowBased();
-		if (ds!=null) {
-			ds.createHTMLSheet(fileName);
-			addButton("LPAR Mem",new File(fileName).getName());
-		}
-	}
 	
-	private void createMemSheetRowBasedCSV(String fileName) {
-		DataSheet ds = createMemSheetRowBased();
-		if (ds!=null) {
-			ds.setSeparator(csvSeparator);
-			ds.createCSVSheet(fileName);
-		}
-	}
-	
+
 	private DataSheet createMemSheetRowBased() {
 		DataSheet ds = new DataSheet();
 		GenericData lpar[], pool[];
@@ -5635,6 +5905,228 @@ public class Loader {
 
 		return ds;
 	}
+	
+	
+	
+	private void createMemSheetRowBasedExcel(WritableSheet sheet) {
+		DataSheet ds = createMemSheetRowBased();
+		if (ds!=null)
+			ds.createExcelSheet(sheet);
+	}
+	
+	private void createMemSheetRowBasedHTML(String fileName) {
+		DataSheet ds = createMemSheetRowBased();
+		if (ds!=null) {
+			ds.createHTMLSheet(fileName);
+			addButton("LPAR Mem",new File(fileName).getName());
+		}
+	}
+	
+	private void createMemSheetRowBasedCSV(String fileName) {
+		DataSheet ds = createMemSheetRowBased();
+		if (ds!=null) {
+			ds.setSeparator(csvSeparator);
+			ds.createCSVSheet(fileName);
+		}
+	}
+	
+	
+	
+	
+	private DataSheet createSysPoolRowBased() {
+		
+		if (entPool == null)
+			return null;
+		
+		
+		DataSheet ds = new DataSheet();
+		int row, col;
+		int i,j;
+		String s[];
+		int size[]=new int[14];
+		int n;
+		
+		int map;
+		
+		String str;
+			
+		row = 0;
+		col = 0;
+		for (i=0; i<size.length; i++)
+			size[i] = 0;
+		
+		
+		/*
+		 * Setup titles for system pools
+		 */ 
+
+		map = BOLD|B_ALL_MED|GREEN|DIAG45;
+		n = ds.addLabel(col,row,"Name",map);			col++;
+		n = ds.addLabel(col,row,"ID",map);				col++;
+		n = ds.addLabel(col,row,"State",map);			col++;
+		n = ds.addLabel(col,row,"Grace Period",map);	col++;
+		n = ds.addLabel(col,row,"Master Name",map);		col++;
+		n = ds.addLabel(col,row,"Master Serial",map);	col++;
+		n = ds.addLabel(col,row,"Backup Serial",map);	col++;
+		n = ds.addLabel(col,row,"Mobile Procs",map);	col++;
+		n = ds.addLabel(col,row,"Avail Mob Procs",map);	col++;
+		n = ds.addLabel(col,row,"Unreturned Mob Procs",map);	col++;
+		n = ds.addLabel(col,row,"Mobile Mem",map);	col++;
+		n = ds.addLabel(col,row,"Avail Mob Mem",map);	col++;
+		n = ds.addLabel(col,row,"Unreturned Mob Mem",map);	col++;
+		
+		row++;
+		
+		
+
+		for (i=0; i<entPool.length; i++) {
+			/*
+			 * Write variables
+			 */
+			
+			map = B_RIGHT_LOW|B_BOTTOM_LOW|B_LEFT_LOW;
+			col=0;
+			
+			n = ds.addLabel(col, row, entPool[i].getVarValues("name"), 0, map); if (n>size[col]) size[col]=n; col++;
+			ds.addInteger(col, row, entPool[i].getVarValues("id"), 0, map); n=4; if (n>size[col]) size[col]=n; col++;
+			n = ds.addLabel(col, row, entPool[i].getVarValues("state"), 0, map); if (n>size[col]) size[col]=n; col++;
+			
+			str = "";
+			s = entPool[i].getVarValues("grace_period_days_remaining");
+			if (s!=null && s[0]!=null) 
+				str = str + s[0] + "D ";
+			s = entPool[i].getVarValues("grace_period_hours_remaining");
+			if (s!=null && s[0]!=null)
+				str = str + s[0] + "H";	
+			n = ds.addLabel(col, row, str, map); if (n<5) n=5; if (n>size[col]) size[col]=n;		
+			col++;
+			
+			n = ds.addLabel(col, row, entPool[i].getVarValues("master_mc_name"), 0, map); if (n>size[col]) size[col]=n; col++;
+			n = ds.addLabel(col, row, entPool[i].getVarValues("master_mc_mtms"), 0, map); if (n>size[col]) size[col]=n; col++;
+			n = ds.addLabel(col, row, entPool[i].getVarValues("backup_master_mc_mtms"), 0, map); if (n>size[col]) size[col]=n; col++;
+			
+			ds.addInteger(col, row, entPool[i].getVarValues("mobile_procs"), 0, map); n=4; if (n>size[col]) size[col]=n; col++;
+			ds.addInteger(col, row, entPool[i].getVarValues("avail_mobile_procs"), 0, map); n=4; if (n>size[col]) size[col]=n; col++;
+			ds.addInteger(col, row, entPool[i].getVarValues("unreturned_mobile_procs"), 0, map); n=4; if (n>size[col]) size[col]=n; col++;
+			
+			ds.addFloatDiv1024(col, row, entPool[i].getVarValues("mobile_mem"), 0, map); n=8; if (n>size[col]) size[col]=n; col++;
+			ds.addFloatDiv1024(col, row, entPool[i].getVarValues("avail_mobile_mem"), 0, map); n=8; if (n>size[col]) size[col]=n; col++;
+			ds.addFloatDiv1024(col, row, entPool[i].getVarValues("unreturned_mobile_mem"), 0, map); n=8; if (n>size[col]) size[col]=n; col++;
+							
+			row++;				
+			
+		}
+		
+		
+		row += 2;
+		col = 0;
+		
+		
+		/*
+		 * Setup titles for system pools's systems
+		 */ 
+		map = BOLD|B_ALL_MED|GREEN|DIAG45;
+		n = ds.addLabel(col,row,"Pool Name",map);			col++;
+		n = ds.addLabel(col,row,"System",map);				col++;
+		n = ds.addLabel(col,row,"Installed CPU",map);		col++;
+		n = ds.addLabel(col,row,"Inactive CPU",map);		col++;
+		n = ds.addLabel(col,row,"Non mobile CPU",map);		col++;
+		n = ds.addLabel(col,row,"Mobile CPU",map);			col++;
+		n = ds.addLabel(col,row,"Unreturned mobile CPU",map);	col++;
+		n = ds.addLabel(col,row,"CPU Grace Period",map);	col++;
+		n = ds.addLabel(col,row,"Installed Mem",map);		col++;
+		n = ds.addLabel(col,row,"Inactive Mem",map);		col++;
+		n = ds.addLabel(col,row,"Non mobile Mem",map);		col++;
+		n = ds.addLabel(col,row,"Mobile Mem",map);			col++;
+		n = ds.addLabel(col,row,"Unreturned mobile Mem",map);	col++;
+		n = ds.addLabel(col,row,"Mem Grace Period",map);	col++;
+
+		row++;
+		
+		GenericData sys[];
+		
+		for (i=0; i<entPool.length; i++) {
+					
+			sys = entPool[i].getObjects(ENTPOOLSYS);
+			
+			for (j=0; j<sys.length; j++) {
+				
+				map = B_RIGHT_LOW|B_BOTTOM_LOW|B_LEFT_LOW;
+				col=0;
+				
+				n = ds.addLabel(col, row, entPool[i].getVarValues("name"), 0, map); if (n>size[col]) size[col]=n; col++;
+				n = ds.addLabel(col, row, sys[j].getVarValues("name"), 0, map); if (n>size[col]) size[col]=n; col++;
+
+				ds.addInteger(col, row, sys[j].getVarValues("installed_procs"), 0, map); n=4; if (n>size[col]) size[col]=n; col++;
+				ds.addInteger(col, row, sys[j].getVarValues("inactive_procs"), 0, map); n=4; if (n>size[col]) size[col]=n; col++;
+				ds.addInteger(col, row, sys[j].getVarValues("non_mobile_procs"), 0, map); n=4; if (n>size[col]) size[col]=n; col++;
+				ds.addInteger(col, row, sys[j].getVarValues("mobile_procs"), 0, map); n=4; if (n>size[col]) size[col]=n; col++;
+				ds.addInteger(col, row, sys[j].getVarValues("unreturned_mobile_procs"), 0, map); n=4; if (n>size[col]) size[col]=n; col++;
+
+				str = "";
+				s = sys[j].getVarValues("proc_grace_period_days_remaining");
+				if (s!=null && s[0]!=null) 
+					str = str + s[0] + "D ";
+				s = sys[j].getVarValues("proc_grace_period_hours_remaining");
+				if (s!=null && s[0]!=null)
+					str = str + s[0] + "H";	
+				n = ds.addLabel(col, row, str, map); if (n<5) n=5; if (n>size[col]) size[col]=n;		
+				col++;
+				
+				ds.addFloatDiv1024(col, row, sys[j].getVarValues("installed_mem"), 0, map); n=8; if (n>size[col]) size[col]=n; col++;
+				ds.addFloatDiv1024(col, row, sys[j].getVarValues("inactive_mem"), 0, map); n=8; if (n>size[col]) size[col]=n; col++;
+				ds.addFloatDiv1024(col, row, sys[j].getVarValues("non_mobile_mem"), 0, map); n=8; if (n>size[col]) size[col]=n; col++;
+				ds.addFloatDiv1024(col, row, sys[j].getVarValues("mobile_mem"), 0, map); n=8; if (n>size[col]) size[col]=n; col++;
+				ds.addFloatDiv1024(col, row, sys[j].getVarValues("unreturned_mobile_mem"), 0, map); n=8; if (n>size[col]) size[col]=n; col++;
+
+				str = "";
+				s = sys[j].getVarValues("mem_grace_period_days_remaining");
+				if (s!=null && s[0]!=null) 
+					str = str + s[0] + "D ";
+				s = sys[j].getVarValues("mem_grace_period_hours_remaining");
+				if (s!=null && s[0]!=null)
+					str = str + s[0] + "H";	
+				n = ds.addLabel(col, row, str, map); if (n<5) n=5; if (n>size[col]) size[col]=n;		
+				col++;
+				
+				
+				row++;
+			}
+			
+		}
+		
+		
+		for (i=0; i<size.length; i++)
+			ds.setColSize(i, size[i]+2);
+
+		return ds;
+	}
+
+
+	private void createSysPoolRowBasedExcel(WritableSheet sheet) {
+		DataSheet ds = createSysPoolRowBased();
+		if (ds!=null)
+			ds.createExcelSheet(sheet);
+	}
+	
+	private void createSysPoolRowBasedHTML(String fileName) {
+		DataSheet ds = createSysPoolRowBased();
+		if (ds!=null) {
+			ds.createHTMLSheet(fileName);
+			addButton("LPAR Mem",new File(fileName).getName());
+		}
+	}
+	
+	private void createSysPoolRowBasedCSV(String fileName) {
+		DataSheet ds = createSysPoolRowBased();
+		if (ds!=null) {
+			ds.setSeparator(csvSeparator);
+			ds.createCSVSheet(fileName);
+		}
+	}
+	
+	
+	
 	
 	
 	private void createMemSheetRowBased(WritableSheet sheet)  throws RowsExceededException, WriteException {
@@ -11020,7 +11512,7 @@ public class Loader {
 				pool = lparStatus[i].getDayPool(j);
 				vp = lparVP[i].getDayData(j);
 				
-				if (f<0 || ent<=0)
+				if (f<0 /*|| ent<=0 */)
 					continue;
 				
 				if (pool.equals("DefaultPool")) {
@@ -11122,7 +11614,8 @@ public class Loader {
 								
 				for (j=364; j>=0; j--)
 					if ( lparEnt[i].getDayData(j)>0) break;
-				ds.addFloat(1+i-from,row-3, lparEnt[i].getDayData(j), B_RIGHT_LOW|B_BOTTOM_LOW|B_LEFT_LOW);		
+				if (j>=0)  // id dedicated LPAR there is no ent
+					ds.addFloat(1+i-from,row-3, lparEnt[i].getDayData(j), B_RIGHT_LOW|B_BOTTOM_LOW|B_LEFT_LOW);		
 			}
 		}
 		
@@ -12672,7 +13165,7 @@ public class Loader {
 		int i,j;
 		GenericData gd[];
 		GenericData lpar[];
-		int row;
+		int row,col;
 		int nameSize=0;
 		String s;
 		int vp=0;
@@ -12692,38 +13185,41 @@ public class Loader {
 		ds.addLabel(1,0,"Status",BOLD|VCENTRE|B_ALL_MED|GREEN);
 		ds.addLabel(2,0,"Type Model",BOLD|B_ALL_MED|WRAP|GREEN);
 		ds.addLabel(3,0,"Serial",BOLD|B_ALL_MED|GREEN);
+		ds.addLabel(4,0,"GHz",BOLD|B_ALL_MED|GREEN);
+		ds.addLabel(5,0,"CPU Type",BOLD|B_ALL_MED|GREEN);
 		
-		ds.addLabel(4,0,"Tot Cores",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
-		ds.addLabel(5,0,"Act Cores",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
-		ds.addLabel(6,0,"Deconf Cores",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
-		ds.addLabel(7,0,"Curr Avail Cores",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
-		ds.addLabel(8,0,"Pend Avail Cores",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN);
 		
-		ds.addLabel(9,0,"Ded Cores",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
-		ds.addLabel(10,0,"Pool Size",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
-		ds.addLabel(11,0,"Virt Procs",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN);
+		ds.addLabel(6,0,"Tot Cores",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
+		ds.addLabel(7,0,"Act Cores",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
+		ds.addLabel(8,0,"Deconf Cores",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
+		ds.addLabel(9,0,"Curr Avail Cores",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
+		ds.addLabel(10,0,"Pend Avail Cores",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN);
 		
-		ds.addLabel(12,0,"#LPAR",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN);
+		ds.addLabel(11,0,"Ded Cores",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
+		ds.addLabel(12,0,"Pool Size",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
+		ds.addLabel(13,0,"Virt Procs",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN);
 		
-		ds.addLabel(13,0,"Tot GB",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
-		ds.addLabel(14,0,"Act GB",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
-		ds.addLabel(15,0,"Deconf GB",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
-		ds.addLabel(16,0,"Firm GB",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
-		ds.addLabel(17,0,"Curr Avail GB",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
-		ds.addLabel(18,0,"Pend Avail GB",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN);
+		ds.addLabel(14,0,"#LPAR",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN);
+		
+		ds.addLabel(15,0,"Tot GB",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
+		ds.addLabel(16,0,"Act GB",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
+		ds.addLabel(17,0,"Deconf GB",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
+		ds.addLabel(18,0,"Firm GB",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
+		ds.addLabel(19,0,"Curr Avail GB",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
+		ds.addLabel(20,0,"Pend Avail GB",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN);
 	
-		ds.addLabel(19,0,"Perf Sample Rate",BOLD|B_ALL_MED|WRAP|GREEN);
+		ds.addLabel(21,0,"Perf Sample Rate",BOLD|B_ALL_MED|WRAP|GREEN);
 		
-		ds.addLabel(20,0,"Mgr #1",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|GREEN);
-		ds.addLabel(21,0,"Mgr #2",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|GREEN);
+		ds.addLabel(22,0,"Mgr #1",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|GREEN);
+		ds.addLabel(23,0,"Mgr #2",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|GREEN);
 		
-		ds.addLabel(22,0,"Prim SP",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
-		ds.addLabel(23,0,"Sec SP",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN);
+		ds.addLabel(24,0,"Prim SP",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
+		ds.addLabel(25,0,"Sec SP",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN);
 	
-		ds.addLabel(24,0,"EC Number",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
-		ds.addLabel(25,0,"IPL Level",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
-		ds.addLabel(26,0,"Activated Level",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
-		ds.addLabel(27,0,"Deferred Level",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN);
+		ds.addLabel(26,0,"EC Number",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
+		ds.addLabel(27,0,"IPL Level",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
+		ds.addLabel(28,0,"Activated Level",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN);
+		ds.addLabel(29,0,"Deferred Level",BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN);
 
 		
 		row =1;
@@ -12747,84 +13243,85 @@ public class Loader {
 					ded += textToInt(lpar[j].getVarValues("run_procs")[0]);
 			}
 			
+			col=0;
 			
-			ds.addLabel(0,row,s,BOLD);
+			
+			ds.addLabel(col++,row,s,BOLD);
 			if (managerType == M_SDMC || managerType == M_FSM)
-				ds.addLabel(1,row,managedSystem[i].getVarValues("primary_state")[0],B_ALL_LOW);
+				ds.addLabel(col++,row,managedSystem[i].getVarValues("primary_state")[0],B_ALL_LOW);
 			else
-				ds.addLabel(1,row,managedSystem[i].getVarValues("state")[0],B_ALL_LOW|RIGHT);
-			ds.addLabel(2,row,managedSystem[i].getVarValues("type_model")[0],B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
-			ds.addLabel(3,row,managedSystem[i].getVarValues("serial_num")[0],B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
+				ds.addLabel(col++,row,managedSystem[i].getVarValues("state")[0],B_ALL_LOW|RIGHT);
+			ds.addLabel(col++,row,managedSystem[i].getVarValues("type_model")[0],B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
+			ds.addLabel(col++,row,managedSystem[i].getVarValues("serial_num")[0],B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
+			if (managedSystem[i].getVarValues("frequency") != null)
+				ds.addFloat(col++,row,managedSystem[i].getVarValues("frequency"),0,B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
+			else
+				col++;
+			if (managedSystem[i].getVarValues("cpu_type") != null)
+				ds.addLabel(col++,row,managedSystem[i].getVarValues("cpu_type"),0,B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
+			else
+				col++;
 			
 			gd = managedSystem[i].getObjects(PROC);
 			if (gd!=null && gd[0]!=null) {		
-				ds.addInteger(4,row,gd[0].getVarValues("installed_sys_proc_units"),0,B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				ds.addInteger(5,row,gd[0].getVarValues("configurable_sys_proc_units"),0,B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				ds.addInteger(6,row,gd[0].getVarValues("deconfig_sys_proc_units"),0,B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				ds.addFloat(7,row, gd[0].getVarValues("curr_avail_sys_proc_units"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				ds.addFloat(8,row, gd[0].getVarValues("pend_avail_sys_proc_units"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+				ds.addInteger(col++,row,gd[0].getVarValues("installed_sys_proc_units"),0,B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+				ds.addInteger(col++,row,gd[0].getVarValues("configurable_sys_proc_units"),0,B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+				ds.addInteger(col++,row,gd[0].getVarValues("deconfig_sys_proc_units"),0,B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+				ds.addFloat(col++,row, gd[0].getVarValues("curr_avail_sys_proc_units"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+				ds.addFloat(col++,row, gd[0].getVarValues("pend_avail_sys_proc_units"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+				ds.addInteger(col++,row, ded, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
 				
-				float pool = Float.parseFloat(gd[0].getVarValues("configurable_sys_proc_units")[0]) - 
-				Float.parseFloat(gd[0].getVarValues("deconfig_sys_proc_units")[0]) -
-					ded;
-				ds.addInteger(10, row, pool, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				/*
-				Formula f = new Formula(10, row, "F"+(row+1)+"-G"+(row+1)+"-J"+(row+1),formatInt(B_RIGHT_LOW|B_BOTTOM_LOW|B_LEFT_LOW);
-				sheet.addCell(f); 
-				*/
+				float pool;
+				try {
+					pool = Float.parseFloat(gd[0].getVarValues("configurable_sys_proc_units")[0]) - 
+							Float.parseFloat(gd[0].getVarValues("deconfig_sys_proc_units")[0]) -
+							ded;
+					ds.addInteger(col++, row, pool, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+				} catch (NumberFormatException nfe) {
+					ds.addLabel(col++,row,"NaN",B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
+				}
+			} else {	
+				col = col + 5;
+				ds.addInteger(col++,row, ded, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+				col++;
 			}
 			
-			ds.addInteger(9,row, ded, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
 			
+			ds.addInteger(col++,row, vp, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
 			
-			ds.addInteger(11,row, vp, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-			
-			ds.addInteger(12,row, numLpar, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+			ds.addInteger(col++,row, numLpar, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
 			
 			gd = managedSystem[i].getObjects(MEM);
 			if (gd!=null && gd[0]!=null) {	
-				ds.addFloatDiv1024(13, row, gd[0].getVarValues("installed_sys_mem"), 0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				ds.addFloatDiv1024(14, row, gd[0].getVarValues("configurable_sys_mem"), 0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				ds.addFloatDiv1024(15, row, gd[0].getVarValues("deconfig_sys_mem"), 0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				ds.addFloatDiv1024(16, row, gd[0].getVarValues("sys_firmware_mem"), 0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				ds.addFloatDiv1024(17, row, gd[0].getVarValues("curr_avail_sys_mem"), 0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				ds.addFloatDiv1024(18, row, gd[0].getVarValues("pend_avail_sys_mem"), 0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				
-				/*
-				d = Double.parseDouble(gd[0].getVarValues("installed_sys_mem")[0])/1024;
-				addNumber(sheet, 13, row, d, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				d = Double.parseDouble(gd[0].getVarValues("configurable_sys_mem")[0])/1024;
-				addNumber(sheet, 14, row, d, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				d = Double.parseDouble(gd[0].getVarValues("deconfig_sys_mem")[0])/1024;
-				addNumber(sheet, 15, row, d, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				d = Double.parseDouble(gd[0].getVarValues("sys_firmware_mem")[0])/1024;
-				addNumber(sheet, 16, row, d, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				d = Double.parseDouble(gd[0].getVarValues("curr_avail_sys_mem")[0])/1024;
-				addNumber(sheet, 17, row, d, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				d = Double.parseDouble(gd[0].getVarValues("pend_avail_sys_mem")[0])/1024;
-				addNumber(sheet, 18, row, d, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				*/
-			}
+				ds.addFloatDiv1024(col++, row, gd[0].getVarValues("installed_sys_mem"), 0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+				ds.addFloatDiv1024(col++, row, gd[0].getVarValues("configurable_sys_mem"), 0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+				ds.addFloatDiv1024(col++, row, gd[0].getVarValues("deconfig_sys_mem"), 0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+				ds.addFloatDiv1024(col++, row, gd[0].getVarValues("sys_firmware_mem"), 0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+				ds.addFloatDiv1024(col++, row, gd[0].getVarValues("curr_avail_sys_mem"), 0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+				ds.addFloatDiv1024(col++, row, gd[0].getVarValues("pend_avail_sys_mem"), 0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+			} else
+				col = col + 6;
 			
-			ds.addInteger( 19, row, managedSystem[i].getVarValues("sample_rate"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+			ds.addInteger( col++, row, managedSystem[i].getVarValues("sample_rate"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
 			
-			ds.addLabel( 20, row, managedSystem[i].getVarValues("HMC1_name"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
-			ds.addLabel( 21, row, managedSystem[i].getVarValues("HMC2_name"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
+			ds.addLabel( col++, row, managedSystem[i].getVarValues("HMC1_name"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
+			ds.addLabel( col++, row, managedSystem[i].getVarValues("HMC2_name"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
 			
-			ds.addLabel( 22, row, managedSystem[i].getVarValues("ipaddr"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
-			ds.addLabel( 23, row, managedSystem[i].getVarValues("ipaddr_secondary"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
+			ds.addLabel( col++, row, managedSystem[i].getVarValues("ipaddr"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
+			ds.addLabel( col++, row, managedSystem[i].getVarValues("ipaddr_secondary"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
 
 			
 			gd = managedSystem[i].getObjects(SYSPOWERLIC);
 			if (gd!=null && gd[0]!=null) {	
-				ds.addLabel( 24, row, gd[0].getVarValues("ecnumber"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
-				ds.addInteger( 25, row, gd[0].getVarValues("platform_ipl_level"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-				ds.addInteger( 26, row, gd[0].getVarValues("activated_level"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+				ds.addLabel( col++, row, gd[0].getVarValues("ecnumber"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
+				ds.addInteger( col++, row, gd[0].getVarValues("platform_ipl_level"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+				ds.addInteger( col++, row, gd[0].getVarValues("activated_level"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
 				if (gd[0].getVarValues("deferred_level")[0].equalsIgnoreCase("None"))
-					ds.addLabel( 27, row, gd[0].getVarValues("deferred_level"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
+					ds.addLabel( col++, row, gd[0].getVarValues("deferred_level"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT);
 				else
-					ds.addInteger( 27, row, gd[0].getVarValues("deferred_level"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
-			}
+					ds.addInteger( col++, row, gd[0].getVarValues("deferred_level"),0, B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW);
+			} else
+				col = col + 4;
 			
 			
 			row++;
@@ -12835,37 +13332,39 @@ public class Loader {
 		ds.setColSize(1, 9);
 		ds.setColSize(2, 9);
 		ds.setColSize(3, 9);
+		ds.setColSize(4, 9);
+		ds.setColSize(5, 20);
 		
-		ds.setColSize(4, 6);
-		ds.setColSize(5, 6);
 		ds.setColSize(6, 6);
+		ds.setColSize(7, 6);
+		ds.setColSize(8, 6);
 		
-		ds.setColSize(7, 9);
-		ds.setColSize(8, 9);
+		ds.setColSize(9, 9);
+		ds.setColSize(10, 9);
 		
-		ds.setColSize(9, 7);
-		ds.setColSize(10, 7);
 		ds.setColSize(11, 7);
-		
 		ds.setColSize(12, 7);
+		ds.setColSize(13, 7);
 		
-		ds.setColSize(13, 9);	
-		ds.setColSize(14, 9);
-		ds.setColSize(15, 9);
+		ds.setColSize(14, 7);
+		
+		ds.setColSize(15, 9);	
 		ds.setColSize(16, 9);
 		ds.setColSize(17, 9);
 		ds.setColSize(18, 9);
 		ds.setColSize(19, 9);
+		ds.setColSize(20, 9);
+		ds.setColSize(21, 9);
 		
-		ds.setColSize(20, 15);
-		ds.setColSize(21, 15);	
 		ds.setColSize(22, 15);
-		ds.setColSize(23, 15);
-		
-		ds.setColSize(24, 9);
-		ds.setColSize(25, 9);
+		ds.setColSize(23, 15);	
+		ds.setColSize(24, 15);
+		ds.setColSize(25, 15);
+	
 		ds.setColSize(26, 9);
 		ds.setColSize(27, 9);
+		ds.setColSize(28, 9);
+		ds.setColSize(29, 9);
 		
 		return ds;	
 	}
@@ -12876,7 +13375,7 @@ public class Loader {
 		int i,j;
 		GenericData gd[];
 		GenericData lpar[];
-		int row;
+		int row, col;
 		int nameSize=0;
 		String s;
 		int vp=0;
@@ -12885,6 +13384,7 @@ public class Loader {
 		double d;
 			
 		row = 0;
+		col = 0;
 		
 		/*
 		 * Setup titles
@@ -12894,38 +13394,39 @@ public class Loader {
 		addLabel(sheet,1,0,"Status",formatLabel(BOLD|VCENTRE|B_ALL_MED|GREEN));
 		addLabel(sheet,2,0,"Type Model",formatLabel(BOLD|B_ALL_MED|WRAP|GREEN));
 		addLabel(sheet,3,0,"Serial",formatLabel(BOLD|B_ALL_MED|GREEN));
+		addLabel(sheet,4,0,"Freq",formatLabel(BOLD|B_ALL_MED|GREEN));
 		
-		addLabel(sheet,4,0,"Tot Cores",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
-		addLabel(sheet,5,0,"Act Cores",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
-		addLabel(sheet,6,0,"Deconf Cores",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
-		addLabel(sheet,7,0,"Curr Avail Cores",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
-		addLabel(sheet,8,0,"Pend Avail Cores",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN));
+		addLabel(sheet,5,0,"Tot Cores",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
+		addLabel(sheet,6,0,"Act Cores",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
+		addLabel(sheet,7,0,"Deconf Cores",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
+		addLabel(sheet,8,0,"Curr Avail Cores",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
+		addLabel(sheet,9,0,"Pend Avail Cores",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN));
 		
-		addLabel(sheet,9,0,"Ded Cores",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
-		addLabel(sheet,10,0,"Pool Size",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
-		addLabel(sheet,11,0,"Virt Procs",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN));
+		addLabel(sheet,10,0,"Ded Cores",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
+		addLabel(sheet,11,0,"Pool Size",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
+		addLabel(sheet,12,0,"Virt Procs",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN));
 		
-		addLabel(sheet,12,0,"#LPAR",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN));
+		addLabel(sheet,13,0,"#LPAR",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN));
 		
-		addLabel(sheet,13,0,"Tot GB",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
-		addLabel(sheet,14,0,"Act GB",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
-		addLabel(sheet,15,0,"Deconf GB",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
-		addLabel(sheet,16,0,"Firm GB",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
-		addLabel(sheet,17,0,"Curr Avail GB",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
-		addLabel(sheet,18,0,"Pend Avail GB",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN));
+		addLabel(sheet,14,0,"Tot GB",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
+		addLabel(sheet,15,0,"Act GB",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
+		addLabel(sheet,16,0,"Deconf GB",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
+		addLabel(sheet,17,0,"Firm GB",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
+		addLabel(sheet,18,0,"Curr Avail GB",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
+		addLabel(sheet,19,0,"Pend Avail GB",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN));
 	
-		addLabel(sheet,19,0,"Perf Sample Rate",formatLabel(BOLD|B_ALL_MED|WRAP|GREEN));
+		addLabel(sheet,20,0,"Perf Sample Rate",formatLabel(BOLD|B_ALL_MED|WRAP|GREEN));
 		
-		addLabel(sheet,20,0,"Mgr #1",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|GREEN));
-		addLabel(sheet,21,0,"Mgr #2",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|GREEN));
+		addLabel(sheet,21,0,"Mgr #1",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|GREEN));
+		addLabel(sheet,22,0,"Mgr #2",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|GREEN));
 		
-		addLabel(sheet,22,0,"Prim SP",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
-		addLabel(sheet,23,0,"Sec SP",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN));
+		addLabel(sheet,23,0,"Prim SP",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
+		addLabel(sheet,24,0,"Sec SP",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN));
 	
-		addLabel(sheet,24,0,"EC Number",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
-		addLabel(sheet,25,0,"IPL Level",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
-		addLabel(sheet,26,0,"Activated Level",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
-		addLabel(sheet,27,0,"Deferred Level",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN));
+		addLabel(sheet,25,0,"EC Number",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
+		addLabel(sheet,26,0,"IPL Level",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
+		addLabel(sheet,27,0,"Activated Level",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_LOW|WRAP|GREEN));
+		addLabel(sheet,28,0,"Deferred Level",formatLabel(BOLD|B_BOTTOM_MED|B_TOP_MED|B_RIGHT_MED|WRAP|GREEN));
 
 		
 		row =1;
@@ -12949,74 +13450,61 @@ public class Loader {
 					ded += textToInt(lpar[j].getVarValues("run_procs")[0]);
 			}
 			
+			col=0;			
 			
-			addLabel(sheet,0,row,s,formatLabel(BOLD));
+			addLabel(sheet,col++,row,s,formatLabel(BOLD));
 			if (managerType == M_SDMC || managerType == M_FSM)
-				addLabel(sheet,1,row,managedSystem[i].getVarValues("primary_state")[0],formatLabel(B_ALL_LOW));
+				addLabel(sheet,col++,row,managedSystem[i].getVarValues("primary_state")[0],formatLabel(B_ALL_LOW));
 			else
-				addLabel(sheet,1,row,managedSystem[i].getVarValues("state")[0],formatLabel(B_ALL_LOW|RIGHT));
-			addLabel(sheet,2,row,managedSystem[i].getVarValues("type_model")[0],formatLabel(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
-			addLabel(sheet,3,row,managedSystem[i].getVarValues("serial_num")[0],formatLabel(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
+				addLabel(sheet,col++,row,managedSystem[i].getVarValues("state")[0],formatLabel(B_ALL_LOW|RIGHT));
+			addLabel(sheet,col++,row,managedSystem[i].getVarValues("type_model")[0],formatLabel(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
+			addLabel(sheet,col++,row,managedSystem[i].getVarValues("serial_num")[0],formatLabel(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
+			addLabel(sheet,col++,row,managedSystem[i].getVarValues("frequency")[0],formatLabel(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
 			
 			gd = managedSystem[i].getObjects(PROC);
 			if (gd!=null && gd[0]!=null) {		
-				addNumber(sheet,4,row,gd[0].getVarValues("installed_sys_proc_units"),0,formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				addNumber(sheet,5,row,gd[0].getVarValues("configurable_sys_proc_units"),0,formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				addNumber(sheet,6,row,gd[0].getVarValues("deconfig_sys_proc_units"),0,formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				addNumber(sheet,7,row, gd[0].getVarValues("curr_avail_sys_proc_units"),0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				addNumber(sheet,8,row, gd[0].getVarValues("pend_avail_sys_proc_units"),0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+				addNumber(sheet,col++,row,gd[0].getVarValues("installed_sys_proc_units"),0,formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+				addNumber(sheet,col++,row,gd[0].getVarValues("configurable_sys_proc_units"),0,formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+				addNumber(sheet,col++,row,gd[0].getVarValues("deconfig_sys_proc_units"),0,formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+				addNumber(sheet,col++,row, gd[0].getVarValues("curr_avail_sys_proc_units"),0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+				addNumber(sheet,col++,row, gd[0].getVarValues("pend_avail_sys_proc_units"),0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
 			}
 			
-			addNumber(sheet,9,row, ded, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-			Formula f = new Formula(10, row, "F"+(row+1)+"-G"+(row+1)+"-J"+(row+1),formatInt(B_RIGHT_LOW|B_BOTTOM_LOW|B_LEFT_LOW));
+			addNumber(sheet,col++,row, ded, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+			Formula f = new Formula(col++, row, "F"+(row+1)+"-G"+(row+1)+"-J"+(row+1),formatInt(B_RIGHT_LOW|B_BOTTOM_LOW|B_LEFT_LOW));
 			sheet.addCell(f); 
-			addNumber(sheet,11,row, vp, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+			addNumber(sheet,col++,row, vp, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
 			
-			addNumber(sheet,12,row, numLpar, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+			addNumber(sheet,col++,row, numLpar, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
 			
 			gd = managedSystem[i].getObjects(MEM);
 			if (gd!=null && gd[0]!=null) {	
-				addNumberDiv1024(sheet, 13, row, gd[0].getVarValues("installed_sys_mem"), 0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				addNumberDiv1024(sheet, 14, row, gd[0].getVarValues("configurable_sys_mem"), 0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				addNumberDiv1024(sheet, 15, row, gd[0].getVarValues("deconfig_sys_mem"), 0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				addNumberDiv1024(sheet, 16, row, gd[0].getVarValues("sys_firmware_mem"), 0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				addNumberDiv1024(sheet, 17, row, gd[0].getVarValues("curr_avail_sys_mem"), 0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				addNumberDiv1024(sheet, 18, row, gd[0].getVarValues("pend_avail_sys_mem"), 0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				
-				/*
-				d = Double.parseDouble(gd[0].getVarValues("installed_sys_mem")[0])/1024;
-				addNumber(sheet, 13, row, d, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				d = Double.parseDouble(gd[0].getVarValues("configurable_sys_mem")[0])/1024;
-				addNumber(sheet, 14, row, d, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				d = Double.parseDouble(gd[0].getVarValues("deconfig_sys_mem")[0])/1024;
-				addNumber(sheet, 15, row, d, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				d = Double.parseDouble(gd[0].getVarValues("sys_firmware_mem")[0])/1024;
-				addNumber(sheet, 16, row, d, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				d = Double.parseDouble(gd[0].getVarValues("curr_avail_sys_mem")[0])/1024;
-				addNumber(sheet, 17, row, d, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				d = Double.parseDouble(gd[0].getVarValues("pend_avail_sys_mem")[0])/1024;
-				addNumber(sheet, 18, row, d, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				*/
+				addNumberDiv1024(sheet, col++, row, gd[0].getVarValues("installed_sys_mem"), 0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+				addNumberDiv1024(sheet, col++, row, gd[0].getVarValues("configurable_sys_mem"), 0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+				addNumberDiv1024(sheet, col++, row, gd[0].getVarValues("deconfig_sys_mem"), 0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+				addNumberDiv1024(sheet, col++, row, gd[0].getVarValues("sys_firmware_mem"), 0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+				addNumberDiv1024(sheet, col++, row, gd[0].getVarValues("curr_avail_sys_mem"), 0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+				addNumberDiv1024(sheet, col++, row, gd[0].getVarValues("pend_avail_sys_mem"), 0, formatFloat(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
 			}
 			
-			addNumber(sheet, 19, row, managedSystem[i].getVarValues("sample_rate"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+			addNumber(sheet, col++, row, managedSystem[i].getVarValues("sample_rate"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
 			
-			addLabel(sheet, 20, row, managedSystem[i].getVarValues("HMC1_name"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
-			addLabel(sheet, 21, row, managedSystem[i].getVarValues("HMC2_name"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
+			addLabel(sheet, col++, row, managedSystem[i].getVarValues("HMC1_name"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
+			addLabel(sheet, col++, row, managedSystem[i].getVarValues("HMC2_name"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
 			
-			addLabel(sheet, 22, row, managedSystem[i].getVarValues("ipaddr"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
-			addLabel(sheet, 23, row, managedSystem[i].getVarValues("ipaddr_secondary"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
+			addLabel(sheet, col++, row, managedSystem[i].getVarValues("ipaddr"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
+			addLabel(sheet, col++, row, managedSystem[i].getVarValues("ipaddr_secondary"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
 
 			
 			gd = managedSystem[i].getObjects(SYSPOWERLIC);
 			if (gd!=null && gd[0]!=null) {	
-				addLabel(sheet, 24, row, gd[0].getVarValues("ecnumber"),0, formatLabel(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
-				addNumber(sheet, 25, row, gd[0].getVarValues("platform_ipl_level"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
-				addNumber(sheet, 26, row, gd[0].getVarValues("activated_level"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+				addLabel(sheet, col++, row, gd[0].getVarValues("ecnumber"),0, formatLabel(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
+				addNumber(sheet, col++, row, gd[0].getVarValues("platform_ipl_level"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+				addNumber(sheet, col++, row, gd[0].getVarValues("activated_level"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
 				if (gd[0].getVarValues("deferred_level")[0].equalsIgnoreCase("None"))
-					addLabel(sheet, 27, row, gd[0].getVarValues("deferred_level"),0, formatLabel(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
+					addLabel(sheet, col++, row, gd[0].getVarValues("deferred_level"),0, formatLabel(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW|RIGHT));
 				else
-					addNumber(sheet, 27, row, gd[0].getVarValues("deferred_level"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
+					addNumber(sheet, col++, row, gd[0].getVarValues("deferred_level"),0, formatInt(B_RIGHT_LOW|B_LEFT_LOW|B_BOTTOM_LOW));
 			}
 			
 			
@@ -13028,37 +13516,39 @@ public class Loader {
 		sheet.setColumnView(1, 9);
 		sheet.setColumnView(2, 9);
 		sheet.setColumnView(3, 9);
+		sheet.setColumnView(4, 9);
 		
-		sheet.setColumnView(4, 6);
+		
 		sheet.setColumnView(5, 6);
 		sheet.setColumnView(6, 6);
+		sheet.setColumnView(7, 6);
 		
-		sheet.setColumnView(7, 9);
 		sheet.setColumnView(8, 9);
+		sheet.setColumnView(9, 9);
 		
-		sheet.setColumnView(9, 7);
 		sheet.setColumnView(10, 7);
 		sheet.setColumnView(11, 7);
-		
 		sheet.setColumnView(12, 7);
 		
-		sheet.setColumnView(13, 9);	
-		sheet.setColumnView(14, 9);
+		sheet.setColumnView(13, 7);
+		
+		sheet.setColumnView(14, 9);	
 		sheet.setColumnView(15, 9);
 		sheet.setColumnView(16, 9);
 		sheet.setColumnView(17, 9);
 		sheet.setColumnView(18, 9);
 		sheet.setColumnView(19, 9);
+		sheet.setColumnView(20, 9);
 		
-		sheet.setColumnView(20, 15);
-		sheet.setColumnView(21, 15);	
-		sheet.setColumnView(22, 15);
+		sheet.setColumnView(21, 15);
+		sheet.setColumnView(22, 15);	
 		sheet.setColumnView(23, 15);
+		sheet.setColumnView(24, 15);
 		
-		sheet.setColumnView(24, 9);
 		sheet.setColumnView(25, 9);
 		sheet.setColumnView(26, 9);
 		sheet.setColumnView(27, 9);
+		sheet.setColumnView(28, 9);
 	
 	}
 	
@@ -13798,6 +14288,12 @@ public class Loader {
 			System.out.println(ioe);
 		}
 		
+		
+		// if no managed systems return 
+		if (managedSystem == null)
+			return;		
+		
+	
 		
 		// Add utilization data configuration
 		Vector<String> system = new Vector<String>();

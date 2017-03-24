@@ -564,6 +564,10 @@ public class DataSheet {
 			// Only keep 2 digits: avoid rounding errors
 			d = 1d*(int)(d*100)/100;
 		} catch (NumberFormatException nfe) {
+			Cell c = getCell(row, col);
+			c.setMap(map);
+			c.setType(LABEL);
+			c.setString("NaN");
 			return;
 		}	
 				
@@ -594,6 +598,10 @@ public class DataSheet {
 			// Only keep 2 digits: avoid rounding errors
 			d = 1d*(int)(d*100)/100;
 		} catch (NumberFormatException nfe) {
+			Cell c = getCell(row, col);
+			c.setMap(map);
+			c.setType(LABEL);
+			c.setString("NaN");
 			return;
 		}	
 				
